@@ -72,6 +72,39 @@ engine = ZooSignalEngine.from_zoo(alpha_ids, top_n=10, bottom_n=10, standardize=
 signal_panel = engine.compute_signal(panel)  # DataFrame, same shape as panel["close"]
 ```
 
+### Dynamic Universe Pool
+
+Use `src.factors.universe_pool.UniversePool` when the strategy should select
+from a liquid, price-bounded universe instead of every input name. The pool is
+recomputed per date and applied before factor evaluation, so excluded names do
+not affect cross-sectional ranks or z-scores.
+
+```python
+from src.factors.universe_pool import UniversePool
+from zoo_signal_engine import ZooSignalEngine
+
+pool = UniversePool(
+    max_market_cap=300_000_000_000,  # < 3000bn CNY; 3000亿 itself is excluded
+    max_price=100,                   # < 100 CNY; 100 itself is excluded
+    activity_metric="amount",        # trailing average trading value
+    activity_window=20,
+    pool_size=500,
+)
+engine = ZooSignalEngine.from_zoo(
+    alpha_ids,
+    top_n=30,
+    universe_pool=pool,
+)
+```
+
+The panel must contain `close`, the configured activity column (by default
+`amount`), and `total_market_cap` in CNY when the cap filter is enabled. Prefer
+an `unadjusted_close` panel for the absolute-price filter; `close` is used as a
+fallback. A full trailing window of activity history is required, so newly
+listed names remain excluded until the window fills. The backtest must execute
+the date-T signal at T+1 (or later); the activity used to build the pool is
+only known at the end of T.
+
 Cross-references:
 - See the `alpha-zoo` skill for browsing the alpha catalogue, filtering by `theme`/`universe`, and inspecting `__alpha_meta__` records.
 - `example_signal_engine.py` is kept for legacy per-symbol workflows that compute factors directly from raw OHLCV; **new code should prefer `zoo_signal_engine.py`** so it benefits from the 450+ zoo alphas, registry-level NaN/inf guardrails, and per-alpha skip isolation.

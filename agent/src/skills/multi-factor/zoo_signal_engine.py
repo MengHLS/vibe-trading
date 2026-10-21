@@ -14,7 +14,10 @@ Pipeline (executed by ``compute_signal``):
    excluded; their weight is redistributed across the surviving alphas.
 2. Optionally cross-sectionally z-score each alpha panel per date.
 3. Weighted sum across survivors (equal weights when ``weights is None``).
-4. If ``top_n`` and/or ``bottom_n`` are set, convert the composite to
+4. If a ``universe_pool`` is configured, mask names outside the dynamic pool
+   before factors are evaluated, so excluded names cannot affect ranks or
+   z-scores.
+5. If ``top_n`` and/or ``bottom_n`` are set, convert the composite to
    discrete positions in ``{-1.0, 0.0, +1.0}`` (long top-N, short bottom-N,
    long-short when both are set). Otherwise return the raw composite score
    and let the caller decide how to size positions.
@@ -73,6 +76,10 @@ class ZooSignalEngine:
             positive.
         bottom_n: Symmetric short side -- bottom-N names take ``-1.0``. Can
             coexist with ``top_n`` for long-short signals. Must be positive.
+        universe_pool: Optional dynamic-universe object implementing
+            ``mask_panel(panel) -> (masked_panel, eligibility_mask)``. The
+            bundled implementation is
+            ``src.factors.universe_pool.UniversePool``.
     """
 
     alpha_ids: Tuple[str, ...]
@@ -80,6 +87,7 @@ class ZooSignalEngine:
     standardize: bool = True
     top_n: Optional[int] = None
     bottom_n: Optional[int] = None
+    universe_pool: Any = None
     # Optional injected registry (chiefly for tests); when ``None`` we lazily
     # construct ``Registry()`` on first compute_signal call. Typed as ``Any``
     # to avoid dataclass forward-ref resolution at class-creation time when
@@ -103,6 +111,10 @@ class ZooSignalEngine:
             raise ValueError(f"top_n must be positive, got {self.top_n}")
         if self.bottom_n is not None and self.bottom_n <= 0:
             raise ValueError(f"bottom_n must be positive, got {self.bottom_n}")
+        if self.universe_pool is not None and not callable(
+            getattr(self.universe_pool, "mask_panel", None)
+        ):
+            raise ValueError("universe_pool must provide a callable mask_panel(panel)")
 
     # ── Constructors ──
 
@@ -115,6 +127,7 @@ class ZooSignalEngine:
         standardize: bool = True,
         top_n: Optional[int] = None,
         bottom_n: Optional[int] = None,
+        universe_pool: Any = None,
         registry: Any = None,
     ) -> "ZooSignalEngine":
         """Build an engine that pulls alphas from the (bundled) Alpha Zoo.
@@ -125,6 +138,9 @@ class ZooSignalEngine:
             standardize: Cross-sectionally z-score each alpha per date.
             top_n: Long top-N names (positive integer).
             bottom_n: Short bottom-N names (positive integer).
+            universe_pool: Optional dynamic-universe filter. Its
+                ``mask_panel`` method must return a masked panel and a boolean
+                eligibility frame.
             registry: Pre-built ``Registry`` (chiefly for tests / alternative
                 zoo roots). When ``None``, a default ``Registry()`` is built
                 lazily on first ``compute_signal`` call.
@@ -138,6 +154,7 @@ class ZooSignalEngine:
             standardize=standardize,
             top_n=top_n,
             bottom_n=bottom_n,
+            universe_pool=universe_pool,
             _registry=registry,
         )
 
@@ -164,6 +181,10 @@ class ZooSignalEngine:
         ref = panel.get("close")
         if ref is None:
             raise ValueError("panel must contain a 'close' DataFrame to anchor output shape")
+
+        eligibility: Optional[pd.DataFrame] = None
+        if self.universe_pool is not None:
+            panel, eligibility = self.universe_pool.mask_panel(panel)
 
         registry = self._registry if self._registry is not None else _default_registry()
 
@@ -210,6 +231,8 @@ class ZooSignalEngine:
 
         # Align to reference shape (defensive: registry already enforces shape).
         composite = composite.reindex(index=ref.index, columns=ref.columns)
+        if eligibility is not None:
+            composite = composite.where(eligibility)
 
         if self.top_n is None and self.bottom_n is None:
             return composite
@@ -272,7 +295,19 @@ class ZooSignalEngine:
         date_index = pd.DatetimeIndex(all_dates)
 
         panel: dict[str, pd.DataFrame] = {}
-        for col in ("open", "high", "low", "close", "volume", "vwap", "amount"):
+        for col in (
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "vwap",
+            "amount",
+            "turnover",
+            "unadjusted_close",
+            "total_market_cap",
+            "market_cap",
+        ):
             frames: dict[str, pd.Series] = {}
             for code in codes:
                 df = data_map[code]

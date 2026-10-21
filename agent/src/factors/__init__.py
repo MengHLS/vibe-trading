@@ -24,11 +24,13 @@ from src.factors.base import (
     ts_std,
     vwap,
 )
+from src.factors.universe_pool import UniversePool
 
 __all__ = [
     "Alpha",
     "AlphaCompute",
     "Market",
+    "UniversePool",
     "decay_linear",
     "delta",
     "rank",
